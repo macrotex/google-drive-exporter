@@ -2,9 +2,11 @@
 
 from __future__ import print_function
 import httplib2
+import sys
 import os
 import re
 import pprint
+import argparse
 
 from apiclient import discovery
 import oauth2client
@@ -13,12 +15,14 @@ from oauth2client import tools
 from oauth2client.service_account import ServiceAccountCredentials
 from httplib2 import Http
 
-DEBUG = True
+DEBUG = False
+QUIET = False
 
 SCOPES             = 'https://www.googleapis.com/auth/drive.readonly'
 CLIENT_SECRET_FILE = 'client_secret.json'
 APPLICATION_NAME   = 'Drive API Python Exporter'
-
+DESTINATION_DIR    = '/media/sf_google_docs_backup'
+#DESTINATION_DIR    = '/media/sf_TEMP'
 
 # A convenience hash to map from short document type to official
 # Google mime-type. See also
@@ -41,6 +45,9 @@ TYPE_TO_GOOGLE_MIME_TYPE = {
     'video':        'application/vnd.google-apps.video',
 }
 
+# Reverse the map.
+GOOGLE_MIME_TYPE_TO_TYPE = dict((v, k) for k, v in TYPE_TO_GOOGLE_MIME_TYPE.iteritems())
+
 # https://developers.google.com/drive/v3/web/manage-downloads
 DOCUMENT_TYPE_TO_MIME_TYPE = {
     'html':        'text/html',
@@ -56,16 +63,62 @@ SPREADSHEET_TYPE_TO_MIME_TYPE = {
     'pdf':         'application/pdf',
     'csv':         'text/csv',
 }
+DRAWING_TYPE_TO_MIME_TYPE = {
+    'jpeg': 'image/jpeg',
+    'png':  'image/png',
+    'svg':  'image/svg+xml',
+    'pdf':  'application/pdf',
+}
+PRESENTATION_TYPE_TO_MIME_TYPE = {
+    'ms-powerpoint': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'pdf':           'application/pdf',
+    'text':          'text/plain',
+}
+SCRIPT_TYPE_TO_MIME_TYPE = {
+    'json': 'application/vnd.google-apps.script+json',
+}
 
 TYPE_TO_EXPORTS = {
-    'spreadsheet': SPREADSHEET_TYPE_TO_MIME_TYPE,
-    'document':    DOCUMENT_TYPE_TO_MIME_TYPE,
+    'spreadsheet':   SPREADSHEET_TYPE_TO_MIME_TYPE,
+    'document':      DOCUMENT_TYPE_TO_MIME_TYPE,
+    'drawing':       DRAWING_TYPE_TO_MIME_TYPE,
+    'presentation':  PRESENTATION_TYPE_TO_MIME_TYPE,
+    'script':        SCRIPT_TYPE_TO_MIME_TYPE,
 }
+
+TYPE_DEFAULT_EXPORT_TYPE = {
+    'spreadsheet':  'open-office',
+    'document':     'open-office',
+    'drawing':      'svg',
+    'presentation': 'ms-powerpoint',
+    'script':       'json',
+}
+
+def export_type_help(type):
+    type_to_mimetype = TYPE_TO_EXPORTS[type]
+    default_export_type = TYPE_DEFAULT_EXPORT_TYPE[type]
+
+    rv = ''
+
+    rv = '  * ' + type + '\n'
+    for type in sorted(type_to_mimetype.keys()):
+        mimetype = type_to_mimetype[type]
+        if (type == default_export_type):
+            default_string = ' [DEFAULT]'
+        else:
+            default_string = ''
+        rv += '    + {0}{1}'.format(type, default_string) + "\n"
+
+    return rv
+
+
 
 # Create a file with the given contents
 def spew(contents, filename):
-    with open(filename,'w') as f:
+    full_path = os.path.join(DESTINATION_DIR, filename)
+    with open(full_path,'w') as f:
         f.write(contents)
+    return full_path
 
 def get_credentials():
     """Gets valid user credentials from storage.
@@ -74,15 +127,20 @@ def get_credentials():
     Credentials, the obtained credential.
     """
 
+    debug_progress('getting secret from secret file and creating credentials object')
     scopes      = [SCOPES]
     credentials = ServiceAccountCredentials.from_json_keyfile_name(CLIENT_SECRET_FILE, scopes=scopes)
     http_auth   = credentials.authorize(Http())
 
     return http_auth
 
-def progress(msg):
+def debug_progress(msg):
     if (DEBUG):
-        print('progress: ' + msg)
+        print('debug_progress: ' + msg)
+
+def progress(msg):
+    if (not QUIET):
+        print(msg)
 
 # Normalize a filename (replace spaces with underscores, etc.)
 def normalize_filename(name):
@@ -94,37 +152,171 @@ def normalize_filename(name):
 
     return normalized
 
-def process_current(service, results, filter_google_mimetype, export_mimetype):
+def process_current(service, results, types_to_export, export_format):
+    export_all = True
+
+    # Convert types into an array of google types.
+    google_types_to_export = []
+    for type in types_to_export:
+        google_types_to_export.append(TYPE_TO_GOOGLE_MIME_TYPE[type])
+        export_all = False
+
     items = results.get('files', [])
     for item in items:
-        name           = item['name']
-        id             = item['id']
+        name            = item['name']
+        id              = item['id']
         google_mimetype = item['mimeType']
 
-        if (google_mimetype == filter_google_mimetype):
-            progress('exporting \'{0}\'({1}): mimetype: {2}'.format(name, id, google_mimetype))
-            results_of_export = service.files().export(fileId=id, mimeType=export_mimetype).execute()
-            normalized_filename = normalize_filename(name)
-            spew(results_of_export, normalized_filename)
-            progress('exported to file {0}'.format(normalized_filename))
+        if (export_all or (google_mimetype in google_types_to_export)):
+            # Get the type from the Google mimetype
+            type = GOOGLE_MIME_TYPE_TO_TYPE[google_mimetype]
+            debug_progress('found file to export of type \'{0}\''.format(type))
 
+            # Set export type (if this one of the types that can have the
+            # export format set)
+            if (type in TYPE_TO_EXPORTS):
+                if (export_format):
+                    export_mimetype = TYPE_TO_EXPORTS[type][export_format]
+                else:
+                    export_mimetype = TYPE_TO_EXPORTS[type][TYPE_DEFAULT_EXPORT_TYPE[type]]
+            else:
+                export_mimetype = None
+
+            debug_progress('export_mimetype is \'{0}\''.format(export_mimetype))
+            debug_progress('exporting \'{0}\'({1}): mimetype: {2}'.format(name, id, export_mimetype))
+
+            if (export_mimetype):
+                results_of_export = service.files().export(fileId=id, mimeType=export_mimetype).execute()
+            else:
+                results_of_export = service.files().export(fileId=id).execute()
+
+            normalized_filename = normalize_filename(name)
+            full_path = spew(results_of_export, normalized_filename)
+            debug_progress('exported to file {0}'.format(normalized_filename))
+            progress('exported file \'{0}\' to file \'{1}\' [{2}]'.format(name, full_path, export_mimetype))
+
+def parse_arguments():
+    google_types = TYPE_TO_GOOGLE_MIME_TYPE.keys()
+
+    parser = argparse.ArgumentParser()
+
+    # --debug flag
+    parser.add_argument("--debug",
+                        help="show details of what is happening",
+                        action="store_true")
+
+    # --type
+    help_text_type = """The type(s) of Google document to export.
+    For more details, use the --help--extended option."""
+    parser.add_argument("--type",
+                        help=help_text_type,
+                        )
+    # --export-format
+    help_text_export = """The format of document that will be saved.
+    For more details, use the --help--extended option."""
+    parser.add_argument("--export-format",
+                        help=help_text_export,
+                        )
+
+
+    # --help-extended
+    help_text_help_extended = """Show more detailed help."""
+    parser.add_argument("--help-extended",
+                        help=help_text_help_extended,
+                        action="store_true"
+                        )
+
+
+    # print(help_text_extended)
+
+    # sys.exit(0)
+    return parser
+
+def help_extended_text():
+
+    google_types = TYPE_TO_GOOGLE_MIME_TYPE.keys()
+    google_types_formatted = '\n'.join(map((lambda x: '  * ' + x), sorted(google_types)))
+
+    doc_export_types = DOCUMENT_TYPE_TO_MIME_TYPE.values()
+    doc_export_types_formatted = DOCUMENT_TYPE_TO_MIME_TYPE.values()
+
+    export_help_text_aux = ''
+    for type in sorted(TYPE_TO_EXPORTS.keys()):
+        export_help_text_aux += export_type_help(type)
+
+    help_text_extended = """
+--type
+Use the --type option to specify which types of Google documents to
+export. If the --type option is not used, the script will export ALL the
+documents that the credentials can access. To restrict the types exported,
+provide a comma-delimited list of types. The valid types to export are:
+{0}
+See also https://developers.google.com/drive/v3/web/manage-downloads
+
+--export-type
+Use the --export-type to specify the format of the downloaded file.
+This is only relevant for the spreadsheet, document, presentation,
+drawing, and script types. If not specified, will output the defualt
+type. Here are the available export types:
+{1}
+Examples:
+  export.py
+      (export all files in their default formats)
+
+  export.py --type spreadsheet
+      (export all spreadsheets in the default format)
+
+  export.py --type spreadsheet,audio,photo
+      (export all spreadsheets, audio files, and photos)
+
+  export.py --type spreadsheet --export-type csv
+      (export all spreadhseets in the csv format)""".format(google_types_formatted, export_help_text_aux)
+
+    return help_text_extended
+
+def exit_with_error(msg):
+    print('error: ' + msg.strip())
+    sys.exit(1)
 
 def main():
+    parser = parse_arguments()
+    args = parser.parse_args()
+
+    if args.help_extended:
+        print(help_extended_text())
+        sys.exit(0)
+
+    if args.debug:
+        global DEBUG
+        DEBUG = True
+
+    # If the --type argument was passed, parse it now.
+    if (args.type):
+        types = args.type.split(',')
+
+        # Make sure each type is valid
+        for type in types:
+            if (not(type in TYPE_TO_GOOGLE_MIME_TYPE)):
+                exit_with_error('unrecognized type \'{0}\''.format(type))
+    else:
+        types = []
+
     """Shows basic usage of the Google Drive API.
     Creates a Google Drive API service object and outputs the names and
     IDs for up to 10 files.
     """
     http_auth = get_credentials()
     service = discovery.build('drive', 'v3', http=http_auth)
+    debug_progress('created Google Drive service object')
 
     type        = 'spreadsheet'
     export_type = 'ms-excel'
 
     filter_google_mimetype = TYPE_TO_GOOGLE_MIME_TYPE[type]
-    progress("filtering on type " + type + " (" + filter_google_mimetype + ")")
+    debug_progress("filtering on type " + type + " (" + filter_google_mimetype + ")")
 
     export_mimetype = TYPE_TO_EXPORTS[type][export_type]
-    progress("exporting to type " + export_type + " (" + export_mimetype + ")")
+    debug_progress("exporting to type " + export_type + " (" + export_mimetype + ")")
 
     first_pass = True
     nextPageToken = None
@@ -133,10 +325,10 @@ def main():
                                        pageToken=nextPageToken,
                                        fields="nextPageToken, kind, files(id, name, mimeType)").execute()
         nextPageToken = results.get('nextPageToken')
-        process_current(service, results, filter_google_mimetype, export_mimetype)
+        process_current(service, results, types, args.export_format)
         first_pass = False
 
-    progress('Finished')
+    debug_progress('Finished')
 
 if __name__ == '__main__':
     main()
