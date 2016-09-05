@@ -6,6 +6,7 @@ import sys
 import os
 import re
 import pprint
+import copy
 import argparse
 
 from apiclient import discovery
@@ -14,6 +15,8 @@ from oauth2client import client
 from oauth2client import tools
 from oauth2client.service_account import ServiceAccountCredentials
 from httplib2 import Http
+
+pp = pprint.PrettyPrinter(indent=4)
 
 DEBUG = False
 QUIET = False
@@ -101,13 +104,13 @@ def export_type_help(type):
     rv = ''
 
     rv = '  * ' + type + '\n'
-    for type in sorted(type_to_mimetype.keys()):
-        mimetype = type_to_mimetype[type]
-        if (type == default_export_type):
+    for export_type in sorted(type_to_mimetype.keys()):
+        mimetype = type_to_mimetype[export_type]
+        if (export_type == default_export_type):
             default_string = ' [DEFAULT]'
         else:
             default_string = ''
-        rv += '    + {0}{1}'.format(type, default_string) + "\n"
+        rv += '    + {0}:{1}{2}'.format(type, export_type, default_string) + "\n"
 
     return rv
 
@@ -152,6 +155,38 @@ def normalize_filename(name):
 
     return normalized
 
+# Create a mapping from the type to the default export type based starting
+# from TYPE_DEFAULT_EXPORT_TYPE
+def build_type_to_export_format(export_format):
+   # Break up export_format
+   export_formats = export_format.split(',')
+
+   # Make a copy of the built-in default export type mapping
+   type_to_export_format = copy.copy(TYPE_DEFAULT_EXPORT_TYPE)
+
+   # Now override the mappings in type_to_export_format with the passed-in
+   # export_format parameter.
+   for export_format in export_formats:
+       # export_format should have the format <type>:<format>
+       type_and_format = export_format.split(':')
+       if (len(type_and_format) != 2):
+           msg = 'could not parse export format \'{0}\''.format(export_format)
+           exit_with_error(msg)
+       else:
+           type   = type_and_format[0]
+           format = type_and_format[1]
+           if (not(type in TYPE_TO_EXPORTS)):
+               msg = 'the type \'{0}\' does not have export formats'.format(type)
+               exit_with_error(msg)
+           else:
+               if (not (format in TYPE_TO_EXPORTS[type])):
+                   msg = 'type \'{0}\' does not export to format \'{1}\''.format(type, format)
+                   exit_with_error(msg)
+               else:
+                   type_to_export_format[type] = format
+
+   return type_to_export_format
+
 def process_current(service, results, types_to_export, export_format):
     export_all = True
 
@@ -161,36 +196,48 @@ def process_current(service, results, types_to_export, export_format):
         google_types_to_export.append(TYPE_TO_GOOGLE_MIME_TYPE[type])
         export_all = False
 
+    type_to_export_format = build_type_to_export_format(export_format)
+
     items = results.get('files', [])
     for item in items:
         name            = item['name']
         id              = item['id']
         google_mimetype = item['mimeType']
 
+        # We never export folders.
+        if (google_mimetype == 'application/vnd.google-apps.folder'):
+            debug_progress('skipping folder \'{0}\''.format(name))
+            continue
+
         if (export_all or (google_mimetype in google_types_to_export)):
             # Get the type from the Google mimetype
-            type = GOOGLE_MIME_TYPE_TO_TYPE[google_mimetype]
+            if (google_mimetype in GOOGLE_MIME_TYPE_TO_TYPE):
+                type = GOOGLE_MIME_TYPE_TO_TYPE[google_mimetype]
+            else:
+                # Unrecognized type, but that's OK as it just means it's
+                # not one we just download as-is.
+                type = None
+
             debug_progress('found file to export of type \'{0}\''.format(type))
 
             # Set export type (if this one of the types that can have the
             # export format set)
-            if (type in TYPE_TO_EXPORTS):
-                if (export_format):
-                    export_mimetype = TYPE_TO_EXPORTS[type][export_format]
-                else:
-                    export_mimetype = TYPE_TO_EXPORTS[type][TYPE_DEFAULT_EXPORT_TYPE[type]]
+            if (type and (type in type_to_export_format)):
+                export_format   = type_to_export_format[type]
+                export_mimetype = TYPE_TO_EXPORTS[type][export_format]
             else:
                 export_mimetype = None
 
             debug_progress('export_mimetype is \'{0}\''.format(export_mimetype))
-            debug_progress('exporting \'{0}\'({1}): mimetype: {2}'.format(name, id, export_mimetype))
+            debug_progress('exporting \'{0}\'({1}): mimetype: {2}'.format(name, id, google_mimetype))
+
+            normalized_filename = normalize_filename(name)
 
             if (export_mimetype):
                 results_of_export = service.files().export(fileId=id, mimeType=export_mimetype).execute()
             else:
-                results_of_export = service.files().export(fileId=id).execute()
+                results_of_export = service.files().get_media(fileId=id).execute()
 
-            normalized_filename = normalize_filename(name)
             full_path = spew(results_of_export, normalized_filename)
             debug_progress('exported to file {0}'.format(normalized_filename))
             progress('exported file \'{0}\' to file \'{1}\' [{2}]'.format(name, full_path, export_mimetype))
@@ -257,7 +304,8 @@ See also https://developers.google.com/drive/v3/web/manage-downloads
 Use the --export-type to specify the format of the downloaded file.
 This is only relevant for the spreadsheet, document, presentation,
 drawing, and script types. If not specified, will output the defualt
-type. Here are the available export types:
+type. You specify the export types as a comma-delimited set of mappings.
+Here are the available export types:
 {1}
 Examples:
   export.py
@@ -269,8 +317,14 @@ Examples:
   export.py --type spreadsheet,audio,photo
       (export all spreadsheets, audio files, and photos)
 
-  export.py --type spreadsheet --export-type csv
-      (export all spreadhseets in the csv format)""".format(google_types_formatted, export_help_text_aux)
+  export.py --type spreadsheet --export-type spreadsheet:csv
+      (export all spreadhseets in the csv format)
+
+  export.py --export-type spreadsheet:pdf,document:rtf
+      (export all files with their default export formats except
+       spreadhseets to be exported to pdf and documents to be
+       exported to rtf)
+""".format(google_types_formatted, export_help_text_aux).strip()
 
     return help_text_extended
 
@@ -290,7 +344,8 @@ def main():
         global DEBUG
         DEBUG = True
 
-    # If the --type argument was passed, parse it now.
+    # If the --type argument was passed, parse it now to get the types of
+    # files we want exported.
     if (args.type):
         types = args.type.split(',')
 
@@ -301,29 +356,20 @@ def main():
     else:
         types = []
 
-    """Shows basic usage of the Google Drive API.
-    Creates a Google Drive API service object and outputs the names and
-    IDs for up to 10 files.
-    """
+    # types is an array that now contains thos types of documents we want
+    # exported, or, if the empty array, means we want to export ALL file
+    # types.
+
     http_auth = get_credentials()
     service = discovery.build('drive', 'v3', http=http_auth)
     debug_progress('created Google Drive service object')
-
-    type        = 'spreadsheet'
-    export_type = 'ms-excel'
-
-    filter_google_mimetype = TYPE_TO_GOOGLE_MIME_TYPE[type]
-    debug_progress("filtering on type " + type + " (" + filter_google_mimetype + ")")
-
-    export_mimetype = TYPE_TO_EXPORTS[type][export_type]
-    debug_progress("exporting to type " + export_type + " (" + export_mimetype + ")")
 
     first_pass = True
     nextPageToken = None
     while (first_pass or nextPageToken):
         results = service.files().list(pageSize=10,
                                        pageToken=nextPageToken,
-                                       fields="nextPageToken, kind, files(id, name, mimeType)").execute()
+                                       fields="nextPageToken, kind, files(id, name, mimeType, webContentLink)").execute()
         nextPageToken = results.get('nextPageToken')
         process_current(service, results, types, args.export_format)
         first_pass = False
