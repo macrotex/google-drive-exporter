@@ -1,3 +1,4 @@
+#!/usr/bin/python
 # Adapted from https://developers.google.com/drive/v3/web/quickstart/python
 
 from __future__ import print_function
@@ -48,9 +49,10 @@ TYPE_TO_GOOGLE_MIME_TYPE = {
     'video':        'application/vnd.google-apps.video',
 }
 
-# Reverse the map.
+# Reverse the TYPE_TO_GOOGLE_MIME_TYPE mapping.
 GOOGLE_MIME_TYPE_TO_TYPE = dict((v, k) for k, v in TYPE_TO_GOOGLE_MIME_TYPE.iteritems())
 
+# Mapping from document type to MIME type. See also
 # https://developers.google.com/drive/v3/web/manage-downloads
 DOCUMENT_TYPE_TO_MIME_TYPE = {
     'html':        'text/html',
@@ -158,11 +160,15 @@ def normalize_filename(name):
 # Create a mapping from the type to the default export type based starting
 # from TYPE_DEFAULT_EXPORT_TYPE
 def build_type_to_export_format(export_format):
-   # Break up export_format
-   export_formats = export_format.split(',')
-
    # Make a copy of the built-in default export type mapping
    type_to_export_format = copy.copy(TYPE_DEFAULT_EXPORT_TYPE)
+
+   if (not export_format):
+       # nothing passed in export_format, so we use all the deftauls.
+       return type_to_export_format
+
+   # If we get here, we have some export formats to override.
+   export_formats = export_format.split(',')
 
    # Now override the mappings in type_to_export_format with the passed-in
    # export_format parameter.
@@ -187,7 +193,7 @@ def build_type_to_export_format(export_format):
 
    return type_to_export_format
 
-def process_current(service, results, types_to_export, export_format):
+def process_current(service, results, types_to_export, export_formats, destination_dir):
     export_all = True
 
     # Convert types into an array of google types.
@@ -196,9 +202,10 @@ def process_current(service, results, types_to_export, export_format):
         google_types_to_export.append(TYPE_TO_GOOGLE_MIME_TYPE[type])
         export_all = False
 
-    type_to_export_format = build_type_to_export_format(export_format)
+    type_to_export_format = build_type_to_export_format(export_formats)
 
     items = results.get('files', [])
+
     for item in items:
         name            = item['name']
         id              = item['id']
@@ -232,14 +239,16 @@ def process_current(service, results, types_to_export, export_format):
             debug_progress('exporting \'{0}\'({1}): mimetype: {2}'.format(name, id, google_mimetype))
 
             normalized_filename = normalize_filename(name)
+            full_destination_path = os.path.join(destination_dir, normalized_filename)
+            debug_progress('destination file full path is \'{0}\''.format(full_destination_path))
 
             if (export_mimetype):
                 results_of_export = service.files().export(fileId=id, mimeType=export_mimetype).execute()
             else:
                 results_of_export = service.files().get_media(fileId=id).execute()
 
-            full_path = spew(results_of_export, normalized_filename)
-            debug_progress('exported to file {0}'.format(normalized_filename))
+            full_path = spew(results_of_export, full_destination_path)
+            debug_progress('exported to file {0}'.format(full_destination_path))
             progress('exported file \'{0}\' to file \'{1}\' [{2}]'.format(name, full_path, export_mimetype))
 
 def parse_arguments():
@@ -251,28 +260,31 @@ def parse_arguments():
     parser.add_argument("--debug",
                         help="show details of what is happening",
                         action="store_true")
-
     # --type
     help_text_type = """The type(s) of Google document to export.
-    For more details, use the --help--extended option."""
+    For more details, use the --help-extended option."""
     parser.add_argument("--type",
                         help=help_text_type,
                         )
     # --export-format
     help_text_export = """The format of document that will be saved.
-    For more details, use the --help--extended option."""
-    parser.add_argument("--export-format",
+    For more details, use the --help-extended option."""
+    parser.add_argument("--export-formats",
                         help=help_text_export,
                         )
-
-
+    # --destination-dir
+    help_text_destination_dir = """The directory where all the exported files will
+    be put. If omitted the current directory will be used. If the
+    directory indicated does not exist, the script will abort."""
+    parser.add_argument("--destination-dir",
+                        help=help_text_destination_dir,
+                        )
     # --help-extended
     help_text_help_extended = """Show more detailed help."""
     parser.add_argument("--help-extended",
                         help=help_text_help_extended,
                         action="store_true"
                         )
-
 
     # print(help_text_extended)
 
@@ -300,12 +312,12 @@ provide a comma-delimited list of types. The valid types to export are:
 {0}
 See also https://developers.google.com/drive/v3/web/manage-downloads
 
---export-type
-Use the --export-type to specify the format of the downloaded file.
+--export-formats
+Use the --export-formats to specify the format of the downloaded file.
 This is only relevant for the spreadsheet, document, presentation,
 drawing, and script types. If not specified, will output the defualt
-type. You specify the export types as a comma-delimited set of mappings.
-Here are the available export types:
+type. You specify the export formats as a comma-delimited set of mappings.
+Here are the available export formats:
 {1}
 Examples:
   export.py
@@ -317,12 +329,12 @@ Examples:
   export.py --type spreadsheet,audio,photo
       (export all spreadsheets, audio files, and photos)
 
-  export.py --type spreadsheet --export-type spreadsheet:csv
+  export.py --type spreadsheet --export-formats spreadsheet:csv
       (export all spreadhseets in the csv format)
 
-  export.py --export-type spreadsheet:pdf,document:rtf
+  export.py --export-formats spreadsheet:pdf,document:rtf
       (export all files with their default export formats except
-       spreadhseets to be exported to pdf and documents to be
+       spreadsheets to be exported to pdf and documents to be
        exported to rtf)
 """.format(google_types_formatted, export_help_text_aux).strip()
 
@@ -334,7 +346,7 @@ def exit_with_error(msg):
 
 def main():
     parser = parse_arguments()
-    args = parser.parse_args()
+    args   = parser.parse_args()
 
     if args.help_extended:
         print(help_extended_text())
@@ -343,6 +355,16 @@ def main():
     if args.debug:
         global DEBUG
         DEBUG = True
+
+    # We start with destination_dir pointing to the current directory, and
+    # then override if necessary.
+    destination_dir = os.getcwd()
+    if (args.destination_dir):
+        destination_dir = args.destination_dir
+
+    debug_progress('destination directory is \'{0}\''.format(destination_dir))
+    if (not os.path.isdir(destination_dir)):
+        exit_with_error('destination directory \'{0}\' does not exist'.format(destination_dir))
 
     # If the --type argument was passed, parse it now to get the types of
     # files we want exported.
@@ -354,14 +376,15 @@ def main():
             if (not(type in TYPE_TO_GOOGLE_MIME_TYPE)):
                 exit_with_error('unrecognized type \'{0}\''.format(type))
     else:
+        # This means export ALL types.
         types = []
 
-    # types is an array that now contains thos types of documents we want
+    # types is an array that now contains those types of documents we want
     # exported, or, if the empty array, means we want to export ALL file
     # types.
 
     http_auth = get_credentials()
-    service = discovery.build('drive', 'v3', http=http_auth)
+    service   = discovery.build('drive', 'v3', http=http_auth)
     debug_progress('created Google Drive service object')
 
     first_pass = True
@@ -371,7 +394,7 @@ def main():
                                        pageToken=nextPageToken,
                                        fields="nextPageToken, kind, files(id, name, mimeType, webContentLink)").execute()
         nextPageToken = results.get('nextPageToken')
-        process_current(service, results, types, args.export_format)
+        process_current(service, results, types, args.export_formats, destination_dir)
         first_pass = False
 
     debug_progress('Finished')
