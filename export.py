@@ -330,7 +330,7 @@ Examples:
       (export all spreadsheets, audio files, and photos)
 
   export.py --type spreadsheet --export-formats spreadsheet:csv
-      (export all spreadhseets in the csv format)
+      (export all spreadsheets in the csv format)
 
   export.py --export-formats spreadsheet:pdf,document:rtf
       (export all files with their default export formats except
