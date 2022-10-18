@@ -92,9 +92,9 @@ TYPE_TO_EXPORTS = {
 }
 
 TYPE_DEFAULT_EXPORT_TYPE = {
-    'spreadsheet':  'open-office',
-    'document':     'open-office',
-    'drawing':      'svg',
+    'spreadsheet':  'ms-excel',
+    'document':     'ms-word',
+    'drawing':      'png',
     'presentation': 'ms-powerpoint',
     'script':       'json',
 }
@@ -153,7 +153,7 @@ def normalize_filename(name):
     normalized = re.sub(r"\s+", ' ', name)
 
     # Replace spaces with underscores
-    normalized =  re.sub(r"\s", '_', normalized)
+    # normalized =  re.sub(r"\s", '_', normalized)
 
     return normalized
 
@@ -249,7 +249,7 @@ def process_current(service, results, types_to_export, export_formats, destinati
 
             full_path = spew(results_of_export, full_destination_path)
             debug_progress('exported to file {0}'.format(full_destination_path))
-            progress('exported file \'{0}\' to file \'{1}\' [{2}]'.format(name, full_path, export_mimetype))
+            # progress('exported file \'{0}\' to file \'{1}\' [{2}]'.format(name, full_path, export_mimetype))
 
 def parse_arguments():
     google_types = TYPE_TO_GOOGLE_MIME_TYPE.keys()
@@ -389,12 +389,18 @@ def main():
 
     first_pass = True
     nextPageToken = None
+    filesListed = 0
+    pageSize = 10
     while (first_pass or nextPageToken):
-        results = service.files().list(pageSize=10,
+        results = service.files().list(pageSize={pageSize},
                                        pageToken=nextPageToken,
-                                       fields="nextPageToken, kind, files(id, name, mimeType, webContentLink)").execute()
+                                       fields="nextPageToken, kind, files(id, name, mimeType, webContentLink, size, md5Checksum)").execute()
         nextPageToken = results.get('nextPageToken')
         process_current(service, results, types, args.export_formats, destination_dir)
+        filesListed += pageSize
+        if (filesListed % 10000) == 0:
+            progress("Exported: {0}".format(filesListed))
+
         first_pass = False
 
     debug_progress('Finished')
