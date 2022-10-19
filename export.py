@@ -9,6 +9,7 @@ import re
 import pprint
 import copy
 import argparse
+import mariadb
 
 from apiclient import discovery
 import oauth2client
@@ -27,6 +28,13 @@ CLIENT_SECRET_FILE = 'client_secret.json'
 APPLICATION_NAME   = 'Drive API Python Exporter'
 DESTINATION_DIR    = '/media/sf_google_docs_backup'
 #DESTINATION_DIR    = '/media/sf_TEMP'
+DB_ENABLED         = "true"
+DB_USER            = "dbuser"
+DB_PASSWORD        = ""
+DB_HOST            = "127.0.0.1"
+DB_PORT            = 3306
+DB_DATABASE        = "employees"
+
 
 # A convenience hash to map from short document type to official
 # Google mime-type. See also
@@ -116,7 +124,20 @@ def export_type_help(type):
 
     return rv
 
+def db_connect():
+    try:
+        conn = mariadb.connect(
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
+            database=DB_DATABASE
 
+        )
+        return conn
+    except mariadb.Error as e:
+        print(f"Error connecting to MariaDB Platform: {e}")
+        return False
 
 # Create a file with the given contents
 def spew(contents, filename):
@@ -193,6 +214,77 @@ def build_type_to_export_format(export_format):
 
    return type_to_export_format
 
+def process_current_db(service, results, types_to_export, export_formats, destination_dir, cur):
+    export_all = True
+
+    # Convert types into an array of google types.
+    google_types_to_export = []
+    for type in types_to_export:
+        google_types_to_export.append(TYPE_TO_GOOGLE_MIME_TYPE[type])
+        export_all = False
+
+    type_to_export_format = build_type_to_export_format(export_formats)
+
+    items = results.get('files', [])
+
+    for item in items:
+        name            = item['name']
+        id              = item['id']
+        google_mimetype = item['mimeType']
+        size            = item['size']
+        md5Hash         = item['md5Checksum']
+
+        # We never export folders.
+        if (google_mimetype == 'application/vnd.google-apps.folder'):
+            debug_progress('skipping folder \'{0}\''.format(name))
+            continue
+
+        # Check Database
+        cur.execute(
+        "SELECT name,id,mimeType,size,md5Checksum FROM {DB_DATABASE} WHERE id=?", 
+        (id))
+        if cur.rowcount >= 1:
+            for (name,id,mimeType,size,md5Checksum) in cur:
+                
+                
+
+        # Checks either all files should be exported or that
+        # the item is of a specified type
+        if (export_all or (google_mimetype in google_types_to_export)):
+            # Get the type from the Google mimetype
+            if (google_mimetype in GOOGLE_MIME_TYPE_TO_TYPE):
+                type = GOOGLE_MIME_TYPE_TO_TYPE[google_mimetype]
+            else:
+                # Unrecognized type, but that's OK as it just means it's
+                # not one we just download as-is.
+                type = None
+
+            debug_progress('found file to export of type \'{0}\''.format(type))
+
+            # Set export type (if this one of the types that can have the
+            # export format set)
+            if (type and (type in type_to_export_format)):
+                export_format   = type_to_export_format[type]
+                export_mimetype = TYPE_TO_EXPORTS[type][export_format]
+            else:
+                export_mimetype = None
+
+            debug_progress('export_mimetype is \'{0}\''.format(export_mimetype))
+            debug_progress('exporting \'{0}\'({1}): mimetype: {2}'.format(name, id, google_mimetype))
+
+            normalized_filename = normalize_filename(name)
+            full_destination_path = os.path.join(destination_dir, normalized_filename)
+            debug_progress('destination file full path is \'{0}\''.format(full_destination_path))
+
+            if (export_mimetype):
+                results_of_export = service.files().export(fileId=id, mimeType=export_mimetype).execute()
+            else:
+                results_of_export = service.files().get_media(fileId=id).execute()
+
+            full_path = spew(results_of_export, full_destination_path)
+            debug_progress('exported to file {0}'.format(full_destination_path))
+            # progress('exported file \'{0}\' to file \'{1}\' [{2}]'.format(name, full_path, export_mimetype))
+
 def process_current(service, results, types_to_export, export_formats, destination_dir):
     export_all = True
 
@@ -210,12 +302,16 @@ def process_current(service, results, types_to_export, export_formats, destinati
         name            = item['name']
         id              = item['id']
         google_mimetype = item['mimeType']
+        size            = item['size']
+        md5Hash         = item['md5Checksum']
 
         # We never export folders.
         if (google_mimetype == 'application/vnd.google-apps.folder'):
             debug_progress('skipping folder \'{0}\''.format(name))
             continue
 
+        # Checks either all files should be exported or that
+        # the item is of a specified type
         if (export_all or (google_mimetype in google_types_to_export)):
             # Get the type from the Google mimetype
             if (google_mimetype in GOOGLE_MIME_TYPE_TO_TYPE):
@@ -387,6 +483,12 @@ def main():
     service   = discovery.build('drive', 'v3', http=http_auth)
     debug_progress('created Google Drive service object')
 
+    cur = False
+    if DB_ENABLED:
+        cur = db_connect()
+        if cur != False:
+            cur = db_connect.cursor()
+
     first_pass = True
     nextPageToken = None
     filesListed = 0
@@ -396,10 +498,13 @@ def main():
                                        pageToken=nextPageToken,
                                        fields="nextPageToken, kind, files(id, name, mimeType, webContentLink, size, md5Checksum)").execute()
         nextPageToken = results.get('nextPageToken')
-        process_current(service, results, types, args.export_formats, destination_dir)
+        
         filesListed += pageSize
         if (filesListed % 10000) == 0:
             progress("Exported: {0}".format(filesListed))
+        
+        if cur != False:
+            process_current_db(service, results, types, args.export_formats, destination_dir, cur)
 
         first_pass = False
 
