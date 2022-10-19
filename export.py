@@ -2,6 +2,8 @@
 # Adapted from https://developers.google.com/drive/v3/web/quickstart/python
 
 from __future__ import print_function
+import mimetypes
+from winreg import REG_RESOURCE_REQUIREMENTS_LIST
 import httplib2
 import sys
 import os
@@ -34,6 +36,7 @@ DB_PASSWORD        = ""
 DB_HOST            = "127.0.0.1"
 DB_PORT            = 3306
 DB_DATABASE        = "employees"
+DB_THRESHHOLD      = 10000
 
 
 # A convenience hash to map from short document type to official
@@ -132,6 +135,7 @@ def db_connect():
             host=DB_HOST,
             port=DB_PORT,
             database=DB_DATABASE
+            autocommit=False
 
         )
         return conn
@@ -240,13 +244,20 @@ def process_current_db(service, results, types_to_export, export_formats, destin
             continue
 
         # Check Database
-        cur.execute(
-        "SELECT name,id,mimeType,size,md5Checksum FROM {DB_DATABASE} WHERE id=?", 
-        (id))
-        if cur.rowcount >= 1:
-            for (name,id,mimeType,size,md5Checksum) in cur:
-                
-                
+        completed = False
+
+        if size > DB_THRESHHOLD:
+            cur.execute(
+            "SELECT name,id,mimeType,size,md5Checksum,status FROM {DB_DATABASE} WHERE id=?", 
+            (id))
+            if cur.rowcount >= 1:
+                for result in cur:
+                    if (result.id is id) and result.status and result.md5Checksum is md5Hash:
+                        completed = True
+                        break
+
+            if completed:
+                continue        
 
         # Checks either all files should be exported or that
         # the item is of a specified type
@@ -284,6 +295,12 @@ def process_current_db(service, results, types_to_export, export_formats, destin
             full_path = spew(results_of_export, full_destination_path)
             debug_progress('exported to file {0}'.format(full_destination_path))
             # progress('exported file \'{0}\' to file \'{1}\' [{2}]'.format(name, full_path, export_mimetype))
+
+            #Add success to DB
+            if size > DB_THRESHHOLD:
+                cur.execute("INSERT INTO {DB_DATABSE} (name,id,mimeType,size,md5Checksum,status) VALUES (?, ?)", (name, id, google_mimetype, size, md5Hash, True))
+    
+    cur.commit()
 
 def process_current(service, results, types_to_export, export_formats, destination_dir):
     export_all = True
@@ -377,6 +394,13 @@ def parse_arguments():
                         )
     # --help-extended
     help_text_help_extended = """Show more detailed help."""
+    parser.add_argument("--help-extended",
+                        help=help_text_help_extended,
+                        action="store_true"
+                        )
+
+    # TODO Finish Parsing DB Vals
+    help_text_DB_ENABLED = """Show more detailed help."""
     parser.add_argument("--help-extended",
                         help=help_text_help_extended,
                         action="store_true"
