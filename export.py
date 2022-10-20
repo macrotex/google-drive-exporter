@@ -134,7 +134,7 @@ def get_credentials():
 
     debug_progress('getting secret from secret file and creating credentials object')
     scopes      = [SCOPES]
-    credentials = ServiceAccountCredentials.from_json_keyfile_name(CLIENT_SECRET_FILE, ''.join(scopes))
+    credentials = ServiceAccountCredentials.from_json_keyfile_name(CLIENT_SECRET_FILE, scopes=''.join(scopes))
     http_auth   = credentials.authorize(Http())
 
     return http_auth
