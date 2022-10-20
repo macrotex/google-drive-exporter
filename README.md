@@ -54,11 +54,10 @@ access your files. The script looks for this secret in the file
 1. To download a Google Drive file your must grant view permission on that file
 to this e-mail address.
 
-External Libraries required:
-* mariadb
+# Libraries required:
 * oauth2client
 * google-api-python-client
 
-they can be installed by using:
-`pip install google-api-python-client oauth2client mariadb`
+They can be installed by using:
+`pip install google-api-python-client oauth2client`
 
