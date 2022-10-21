@@ -121,7 +121,7 @@ def export_type_help(type):
 # Create a file with the given contents
 def spew(contents, filename):
     full_path = os.path.join(DESTINATION_DIR, filename)
-    with open(full_path,'w') as f:
+    with open(full_path,'wb') as f:
         f.write(contents)
     return full_path
 
