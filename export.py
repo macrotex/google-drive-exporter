@@ -50,7 +50,7 @@ TYPE_TO_GOOGLE_MIME_TYPE = {
 }
 
 # Reverse the TYPE_TO_GOOGLE_MIME_TYPE mapping.
-GOOGLE_MIME_TYPE_TO_TYPE = dict((v, k) for k, v in TYPE_TO_GOOGLE_MIME_TYPE.iteritems())
+GOOGLE_MIME_TYPE_TO_TYPE = dict((v, k) for k, v in TYPE_TO_GOOGLE_MIME_TYPE.items())
 
 # Mapping from document type to MIME type. See also
 # https://developers.google.com/drive/v3/web/manage-downloads
@@ -121,7 +121,7 @@ def export_type_help(type):
 # Create a file with the given contents
 def spew(contents, filename):
     full_path = os.path.join(DESTINATION_DIR, filename)
-    with open(full_path,'w') as f:
+    with open(full_path,'wb') as f:
         f.write(contents)
     return full_path
 
@@ -134,7 +134,7 @@ def get_credentials():
 
     debug_progress('getting secret from secret file and creating credentials object')
     scopes      = [SCOPES]
-    credentials = ServiceAccountCredentials.from_json_keyfile_name(CLIENT_SECRET_FILE, scopes=scopes)
+    credentials = ServiceAccountCredentials.from_json_keyfile_name(CLIENT_SECRET_FILE, scopes=''.join(scopes))
     http_auth   = credentials.authorize(Http())
 
     return http_auth
